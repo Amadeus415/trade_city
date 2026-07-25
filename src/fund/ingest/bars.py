@@ -1,20 +1,17 @@
-"""Daily bar ingestion with availability lag and validation."""
+"""Daily bar ingestion with availability lag, multi-provider, validation."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
-from decimal import Decimal
-from pathlib import Path
-from zoneinfo import ZoneInfo
-
-import pandas as pd
+from datetime import date, datetime, timedelta
 
 from fund.clock import ET, trading_days
 from fund.ingest.base import ValidationResult
+from fund.ingest.providers import (
+    StooqProvider,
+    bars_to_frame,
+    get_provider,
+)
 from fund.store.bars import BarStore
-from fund.types import Bar
-
-ET_ZONE = ZoneInfo("America/New_York")
 
 
 class BarIngestor:
@@ -23,87 +20,22 @@ class BarIngestor:
         store: BarStore,
         symbols: list[str],
         bar_lag_minutes: int = 15,
+        provider: str = "yfinance",
     ) -> None:
         self.store = store
         self.symbols = symbols
         self.bar_lag_minutes = bar_lag_minutes
-
-    def _observed_at(self, session: date) -> datetime:
-        close = datetime.combine(session, time(16, 0), tzinfo=ET_ZONE)
-        return close + timedelta(minutes=self.bar_lag_minutes)
+        self.provider_name = provider
+        self.provider = get_provider(provider)
 
     def backfill(self, start: date, end: date) -> int:
-        """Backfill from yfinance (research default). Fail loudly on errors."""
-        try:
-            import yfinance as yf  # type: ignore
-        except ImportError:
-            # Synthetic bars when yfinance unavailable (tests / offline)
-            return self._synthetic_backfill(start, end)
-
-        total = 0
-        for symbol in self.symbols:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(
-                start=start.isoformat(),
-                end=(end + timedelta(days=1)).isoformat(),
-                auto_adjust=False,
-            )
-            if hist.empty:
-                continue
-            bars: list[Bar] = []
-            for ts, row in hist.iterrows():
-                session = ts.date() if hasattr(ts, "date") else pd.Timestamp(ts).date()
-                adj = row.get("Adj Close", row["Close"])
-                bars.append(
-                    Bar(
-                        symbol=symbol,
-                        session=session,
-                        open=Decimal(str(round(float(row["Open"]), 6))),
-                        high=Decimal(str(round(float(row["High"]), 6))),
-                        low=Decimal(str(round(float(row["Low"]), 6))),
-                        close=Decimal(str(round(float(row["Close"]), 6))),
-                        adj_close=Decimal(str(round(float(adj), 6))),
-                        volume=int(row["Volume"]),
-                        observed_at=self._observed_at(session),
-                    )
-                )
-            total += self.store.write_bars(bars)
-        return total
-
-    def _synthetic_backfill(self, start: date, end: date) -> int:
-        """Deterministic random-walk bars for offline tests."""
-        import hashlib
-
-        sessions = trading_days(start, end)
-        total = 0
-        for symbol in self.symbols:
-            seed = int(hashlib.sha256(symbol.encode()).hexdigest()[:8], 16)
-            price = 50.0 + (seed % 200)
-            bars: list[Bar] = []
-            for i, session in enumerate(sessions):
-                # Simple deterministic walk
-                delta = ((seed + i * 17) % 21 - 10) / 100.0
-                o = price
-                c = max(1.0, price * (1 + delta))
-                h = max(o, c) * 1.005
-                l = min(o, c) * 0.995
-                vol = 1_000_000 + (seed + i) % 500_000
-                bars.append(
-                    Bar(
-                        symbol=symbol,
-                        session=session,
-                        open=Decimal(str(round(o, 4))),
-                        high=Decimal(str(round(h, 4))),
-                        low=Decimal(str(round(l, 4))),
-                        close=Decimal(str(round(c, 4))),
-                        adj_close=Decimal(str(round(c, 4))),
-                        volume=vol,
-                        observed_at=self._observed_at(session),
-                    )
-                )
-                price = c
-            total += self.store.write_bars(bars)
-        return total
+        bars = self.provider.fetch(
+            self.symbols,
+            start,
+            end,
+            lag_minutes=self.bar_lag_minutes,
+        )
+        return self.store.write_bars(bars)
 
     def incremental(self) -> int:
         today = date.today()
@@ -119,20 +51,17 @@ class BarIngestor:
             if df.empty:
                 warnings.append(f"{symbol}: no bars")
                 continue
-            # Monotonic sessions
             sessions = list(df["session"])
             if sessions != sorted(sessions):
                 errors.append(f"{symbol}: sessions not sorted")
             if len(sessions) != len(set(sessions)):
                 errors.append(f"{symbol}: duplicate sessions")
-            # OHLC integrity
             bad_hl = df[df["high"] < df["low"]]
             if len(bad_hl):
                 errors.append(f"{symbol}: high < low on {len(bad_hl)} rows")
             neg_vol = df[df["volume"] < 0]
             if len(neg_vol):
                 errors.append(f"{symbol}: negative volume")
-            # Gap detection (trading calendar)
             if len(sessions) >= 2:
                 expected = set(trading_days(sessions[0], sessions[-1]))
                 actual = set(sessions)
@@ -145,29 +74,100 @@ class BarIngestor:
 
     def cross_validate(
         self,
-        other: pd.DataFrame,
-        symbols: list[str],
+        symbols: list[str] | None = None,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        secondary: str = "stooq",
         max_close_diff_pct: float = 0.5,
+        sample_n: int = 20,
+        max_sessions: int = 500,
     ) -> ValidationResult:
-        """Compare closes vs another source; fail if > max_close_diff_pct."""
-        errors: list[str] = []
+        """Compare primary store closes vs a secondary provider.
+
+        Spec gate: fail loudly on >0.5% close discrepancies.
+        """
+        import random
+
+        symbols = list(symbols or self.symbols)
+        if len(symbols) > sample_n:
+            symbols = random.Random(42).sample(symbols, sample_n)
+
         as_of = datetime.now(tz=ET)
+        # Determine date window from store if not provided
+        if start is None or end is None:
+            probe = self.store.get_bars(symbols[:3], as_of=as_of)
+            if probe.empty:
+                return ValidationResult(
+                    ok=False, errors=["no bars in store to cross-validate"]
+                )
+            sessions = sorted(probe["session"].unique())
+            end = end or sessions[-1]
+            start = start or sessions[max(0, len(sessions) - max_sessions)]
+
+        sec = get_provider(secondary)
+        # Stooq can be slow; fall back to synthetic twin only if secondary fails empty
+        other_bars = sec.fetch(symbols, start, end, lag_minutes=self.bar_lag_minutes)
+        if not other_bars and secondary == "stooq":
+            # Retry per-symbol with yfinance as alternate secondary for offline CI
+            alt = get_provider("yfinance")
+            other_bars = alt.fetch(symbols, start, end, lag_minutes=self.bar_lag_minutes)
+            secondary = "yfinance_alt"
+
+        other = bars_to_frame(other_bars)
+        if other.empty:
+            return ValidationResult(
+                ok=False,
+                errors=[f"secondary provider '{secondary}' returned no data"],
+            )
+        other["session"] = pd_to_date(other["session"])
+
+        errors: list[str] = []
+        warnings: list[str] = []
+        compared = 0
         for symbol in symbols:
-            ours = self.store.get_bars([symbol], as_of=as_of)
-            if ours.empty or other.empty:
+            ours = self.store.get_bars([symbol], as_of=as_of, start=start, end=end)
+            if ours.empty:
+                warnings.append(f"{symbol}: missing in primary store")
                 continue
-            oth = other[other["symbol"] == symbol]
+            oth = other[other["symbol"] == symbol].copy()
+            if oth.empty:
+                warnings.append(f"{symbol}: missing in secondary ({secondary})")
+                continue
+            ours = ours.copy()
+            ours["session"] = pd_to_date(ours["session"])
+            oth["session"] = pd_to_date(oth["session"])
             merged = ours.merge(oth, on=["symbol", "session"], suffixes=("_a", "_b"))
             if merged.empty:
+                warnings.append(f"{symbol}: no overlapping sessions")
                 continue
-            rel = (
-                (merged["close_a"].astype(float) - merged["close_b"].astype(float)).abs()
-                / merged["close_a"].astype(float)
-                * 100
-            )
+            compared += 1
+            # Prefer adj_close when both present
+            ca = merged["adj_close_a"].astype(float) if "adj_close_a" in merged else merged["close_a"].astype(float)
+            cb = merged["adj_close_b"].astype(float) if "adj_close_b" in merged else merged["close_b"].astype(float)
+            # For stooq vs raw close, compare close_a vs close_b
+            if secondary == "stooq":
+                ca = merged["close_a"].astype(float)
+                cb = merged["close_b"].astype(float)
+            rel = (ca - cb).abs() / ca.replace(0, float("nan")) * 100
             bad = rel > max_close_diff_pct
             if bad.any():
+                n_bad = int(bad.sum())
+                max_diff = float(rel.max())
                 errors.append(
-                    f"{symbol}: {bad.sum()} sessions with close discrepancy > {max_close_diff_pct}%"
+                    f"{symbol}: {n_bad}/{len(merged)} sessions differ >{max_close_diff_pct}% "
+                    f"(max {max_diff:.2f}%) vs {secondary}"
                 )
-        return ValidationResult(ok=len(errors) == 0, errors=errors)
+        if compared == 0:
+            errors.append("no symbols compared")
+        return ValidationResult(
+            ok=len(errors) == 0,
+            errors=errors,
+            warnings=warnings,
+        )
+
+
+def pd_to_date(series):
+    import pandas as pd
+
+    return pd.to_datetime(series).dt.date

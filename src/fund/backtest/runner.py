@@ -91,6 +91,16 @@ class BacktestRunner:
         if not sessions:
             raise ValueError(f"no trading days in {start}..{end}")
 
+        # Preload all bars once — backtests re-query every session
+        try:
+            syms = self.universe.static_allowlist()
+            if "SPY" not in syms:
+                syms = list(syms) + ["SPY"]
+            n = self.bars.preload(syms)
+            log.info("bars_preloaded", rows=n, symbols=len(syms))
+        except Exception as e:
+            log.warning("bars_preload_failed", error=str(e))
+
         run_id = self.journal.start_run(
             mode="backtest",
             config_hash=self.settings.config_hash(),

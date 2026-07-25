@@ -25,18 +25,31 @@ cp .env.example .env
 # M0 gate
 uv run fund healthcheck
 
-# Backfill research bars (yfinance if installed; else synthetic)
-uv run fund ingest backfill --start 2023-01-01 --end 2024-12-31 --mode backtest
-uv run fund ingest validate --mode backtest
+# ── Full research pipeline (recommended) ──────────────────────────
+# ingest → validate → baselines → agent backtest → reports
+uv run fund pipeline research \
+  --start 2023-01-01 --end 2024-12-31 \
+  --provider yfinance \
+  --monkey-runs 50
 
-# Run agent backtest (mock LLM by default — model-agnostic)
+# Optional: M5 leakage gate (all four masking modes)
+uv run fund pipeline research \
+  --start 2024-01-01 --end 2024-06-30 \
+  --provider yfinance --leakage --monkey-runs 50
+
+# Or step-by-step:
+uv run fund ingest backfill --start 2023-01-01 --end 2024-12-31 --provider yfinance
+uv run fund ingest validate
+uv run fund ingest cross-validate --sample 20
+uv run fund eval baselines --start 2023-01-01 --end 2024-12-31
 uv run fund backtest run --start 2024-01-01 --end 2024-06-30 --strategy agent
-
-# Momentum baseline (no LLM)
-uv run fund backtest run --start 2024-01-01 --end 2024-06-30 --strategy momentum
-
-# Report
 uv run fund eval report --run <run_id>
+uv run fund eval leakage --start 2024-01-01 --end 2024-06-30
+
+# Paper day (cron-friendly)
+uv run fund pipeline paper-day          # dry-run execute
+./scripts/cron_paper.sh after-close     # post-close jobs
+./scripts/cron_paper.sh after-open      # post-open jobs
 ```
 
 ## Model-agnostic LLM layer
