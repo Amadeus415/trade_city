@@ -78,15 +78,14 @@ class BarStore:
             df = bars.copy()
         if df.empty:
             return 0
-        df["session"] = pd.to_datetime(df["session"]).dt.date
-        df["observed_at"] = pd.to_datetime(df["observed_at"], utc=True)
+        df = self._normalize_frame(df)
         df["year"] = pd.to_datetime(df["session"]).dt.year
         n = 0
         for (symbol, year), group in df.groupby(["symbol", "year"]):
             path = self._path(str(symbol), int(year))
             g = group.drop(columns=["year"], errors="ignore")
             if path.exists():
-                existing = pd.read_parquet(path)
+                existing = self._normalize_frame(pd.read_parquet(path))
                 combined = pd.concat([existing, g], ignore_index=True)
                 combined = combined.drop_duplicates(
                     subset=["symbol", "session"], keep="last"
@@ -99,6 +98,20 @@ class BarStore:
                 g.to_parquet(path, index=False)
                 n += len(g)
         return n
+
+    @staticmethod
+    def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+        """Stable dtypes so multi-year Parquet reads don't hit DECIMAL precision clashes."""
+        out = df.copy()
+        out["symbol"] = out["symbol"].astype(str)
+        out["session"] = pd.to_datetime(out["session"]).dt.date
+        out["observed_at"] = pd.to_datetime(out["observed_at"], utc=True)
+        for col in ("open", "high", "low", "close", "adj_close"):
+            if col in out.columns:
+                out[col] = out[col].astype("float64")
+        if "volume" in out.columns:
+            out["volume"] = out["volume"].astype("int64")
+        return out
 
     def get_bars(
         self,
@@ -135,13 +148,28 @@ class BarStore:
     def _load_from_disk(self, symbols: list[str]) -> pd.DataFrame:
         frames: list[pd.DataFrame] = []
         for symbol in symbols:
-            files = list((self.root / f"symbol={symbol}").glob("year=*/part.parquet"))
+            files = sorted((self.root / f"symbol={symbol}").glob("year=*/part.parquet"))
             if not files:
                 continue
             con = duckdb.connect()
             try:
                 paths = ", ".join(repr(str(f)) for f in files)
-                frame = con.execute(f"SELECT * FROM read_parquet([{paths}])").fetchdf()
+                # union_by_name + cast avoids DECIMAL(p,s) mismatches across years
+                frame = con.execute(
+                    f"""
+                    SELECT
+                      symbol::VARCHAR AS symbol,
+                      session,
+                      open::DOUBLE AS open,
+                      high::DOUBLE AS high,
+                      low::DOUBLE AS low,
+                      close::DOUBLE AS close,
+                      adj_close::DOUBLE AS adj_close,
+                      volume::BIGINT AS volume,
+                      observed_at
+                    FROM read_parquet([{paths}], union_by_name=true)
+                    """
+                ).fetchdf()
             finally:
                 con.close()
             if not frame.empty:
@@ -161,6 +189,18 @@ class BarStore:
                 ]
             )
         return pd.concat(frames, ignore_index=True)
+
+    def rewrite_all_float(self) -> int:
+        """One-shot normalize of on-disk parquet dtypes (DECIMAL → float64)."""
+        n = 0
+        for symbol in self.available_symbols():
+            files = list((self.root / f"symbol={symbol}").glob("year=*/part.parquet"))
+            for path in files:
+                df = self._normalize_frame(pd.read_parquet(path))
+                df.to_parquet(path, index=False)
+                n += len(df)
+        self.clear_cache()
+        return n
 
     def get_last_bar(self, symbol: str, as_of: datetime) -> Bar | None:
         df = self.get_bars([symbol], as_of=as_of, lookback=1)
