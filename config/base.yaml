@@ -1,0 +1,97 @@
+# Shared defaults — mode configs override these.
+
+limits_version: "1.0.0"
+
+mode: paper
+data_dir: ./data
+journal_path: ./data/journal.db
+timezone: America/New_York
+
+initial_cash: "10000.00"
+
+# Availability lags (seconds after event)
+availability:
+  bar_lag_minutes: 15
+  news_lag_minutes: 2
+
+risk:
+  limits_version: "1.0.0"
+
+  account:
+    max_gross_exposure: 0.95
+    max_net_exposure: 0.95
+    min_cash_buffer_pct: 0.05
+    allow_short: false
+    allow_margin: false
+
+  position:
+    max_position_weight: 0.10
+    max_new_position_weight: 0.05
+    max_positions: 15
+    min_position_notional: 50.00
+    max_add_per_cycle_weight: 0.02
+
+  concentration:
+    max_sector_weight: 0.30
+    max_cluster_weight: 0.35
+    correlation_threshold: 0.70
+
+  turnover:
+    max_daily_turnover: 0.25
+    max_orders_per_day: 10
+    min_holding_days: 2
+    max_round_trips_per_week: 3
+
+  loss_limits:
+    daily_loss_soft_pct: 0.02
+    daily_loss_hard_pct: 0.03
+    weekly_loss_hard_pct: 0.07
+    max_drawdown_halt_pct: 0.15
+    consecutive_loss_days_halt: 5
+
+  order:
+    limit_orders_only: true
+    max_limit_offset_bps: 50
+    max_spread_bps: 30
+    max_pct_of_adv: 0.001
+    reject_if_halted: true
+    no_trade_first_minutes: 15
+    no_trade_last_minutes: 10
+
+  universe:
+    allowlist_only: true
+    min_price: 5.00
+    max_price: 2000.00
+    min_avg_dollar_volume_21d: 5000000
+    min_days_listed: 250
+    exclude_earnings_within_days: 2
+    blocklist: []
+
+agent:
+  # Provider is model-agnostic: openai | anthropic | xai | ollama | mock
+  provider: mock
+  analyst_model: mock-analyst
+  pm_model: mock-pm
+  temperature: 0.1
+  masking_mode: bright  # bright | stock_blind | date_blind | blinded
+  max_retries: 1
+  cache_enabled: true
+  cache_dir: ./data/llm_cache
+
+costs:
+  commission_per_share: "0.01"
+  default_spread_bps_liquid: 5
+  default_spread_bps_illiquid: 15
+  slippage_base_bps: 5
+  slippage_size_coeff: 10
+  limit_nonfill_rate: 0.20
+  sec_fee_bps: 0.08
+  finra_taf_per_share: "0.000166"
+
+backtest:
+  start_cash: "10000.00"
+  monkey_runs: 200
+  random_seed: 42
+
+alerting:
+  webhook_url: null

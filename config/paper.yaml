@@ -1,0 +1,14 @@
+# Paper trading — live data, simulated execution
+mode: paper
+
+agent:
+  provider: mock  # set LLM_PROVIDER / override for real models
+  masking_mode: bright
+  cache_enabled: true
+
+risk:
+  # Slightly tighter for paper observation
+  position:
+    max_position_weight: 0.08
+  turnover:
+    max_orders_per_day: 8

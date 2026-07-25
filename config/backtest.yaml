@@ -1,0 +1,12 @@
+# Overrides for backtest mode
+mode: backtest
+
+agent:
+  provider: mock
+  masking_mode: bright
+  cache_enabled: true
+
+backtest:
+  start_cash: "10000.00"
+  monkey_runs: 200
+  random_seed: 42

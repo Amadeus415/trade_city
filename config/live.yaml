@@ -1,0 +1,23 @@
+# Live trading — tiny capital, reviewed by hand. Do not loosen casually.
+mode: live
+
+risk:
+  limits_version: "1.0.0-live"
+  position:
+    max_position_weight: 0.05
+    max_new_position_weight: 0.03
+    max_positions: 8
+    max_add_per_cycle_weight: 0.01
+  turnover:
+    max_orders_per_day: 3
+    max_daily_turnover: 0.15
+  loss_limits:
+    daily_loss_soft_pct: 0.015
+    daily_loss_hard_pct: 0.02
+    weekly_loss_hard_pct: 0.05
+    max_drawdown_halt_pct: 0.10
+
+agent:
+  provider: mock  # override via env for real provider
+  masking_mode: bright
+  cache_enabled: true

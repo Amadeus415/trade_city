@@ -1,0 +1,43 @@
+# Secrets & local env
+.env
+*.pem
+*.key
+
+# Data & runtime artefacts
+data/
+*.db
+*.db-wal
+*.db-shm
+cache/
+llm_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Reports / outputs
+reports/
+*.parquet
+!tests/fixtures/**
+
+# uv
+uv.lock.bak
