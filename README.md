@@ -78,7 +78,7 @@ Providers implement `LLMProvider.complete(messages, response_schema=...)`. Swap 
 ## CLI
 
 ```
-fund ingest incremental|backfill|validate
+fund ingest incremental|backfill|validate|cross-validate
 fund decide --mode {backtest,paper,live} [--as-of] [--dry-run]
 fund execute --mode {paper,live} [--dry-run]
 fund reconcile
@@ -86,21 +86,25 @@ fund healthcheck
 fund risk status|reset --confirm-equity <value>
 fund backtest run --start ... --end ... [--strategy agent|momentum|equal_weight]
 fund eval report --run <id>
+fund eval baselines --start ... --end ...
+fund eval leakage --start ... --end ...
+fund pipeline research --start ... --end ... [--provider yfinance|synthetic] [--leakage]
+fund pipeline paper-day [--live-execute]
 ```
 
-Daily schedule (US equities): decide after close; execute after the open settles. See the plan §11.
+Daily schedule (US equities): decide after close; execute after the open settles. See `scripts/cron_paper.sh`.
 
 ## Milestones
 
 | Gate | Status in repo |
 |------|----------------|
 | M0 Scaffolding | Implemented |
-| M1 Data + PIT | Implemented (+ tests) |
-| M2 Backtester + baselines | Implemented |
+| M1 Data + PIT | Implemented (+ multi-provider + cross-validate) |
+| M2 Backtester + baselines | Implemented (`fund eval baselines`) |
 | M3 Risk engine | Implemented (+ hypothesis) |
 | M4 Features + agent | Implemented (mock + multi-provider) |
-| M5 Leakage gate | Tooling ready (`masking_mode`); run empirically before live |
-| M6 Paper (3 mo) | Calendar-bound — not skippable |
+| M5 Leakage gate | Implemented (`fund eval leakage` / `--leakage`) — **run before live** |
+| M6 Paper (3 mo) | `fund pipeline paper-day` + cron scripts — calendar-bound |
 | M7 Live ≤ $500 | Robinhood MCP adapter stub; token outside repo |
 | M8 Scaling policy | `SCALING_POLICY.md` |
 
